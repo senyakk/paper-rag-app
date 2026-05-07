@@ -1,6 +1,10 @@
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 
+"""
+Manual admin script - the app doesn't depend on it
+"""
+
 collection_name = "hf_documents"
 
 qdrant = QdrantClient(host="localhost", port=6333)

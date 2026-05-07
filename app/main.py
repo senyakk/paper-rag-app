@@ -7,6 +7,18 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import uuid
 
+from contextlib import asynccontextmanager
+from app.prompts import build_rag_prompt
+
+from app.schemas import (
+    UploadResponse,
+    QueryRequest,
+    QueryResponse,
+    SourceChunk,
+    Answer
+)
+
+
 load_dotenv()
 
 hf_token = os.getenv("HF_TOKEN")
@@ -28,16 +40,37 @@ llm_client = InferenceClient(
 # model="mistralai/Mistral-7B-Instruct-v0.3"
 
 
+COLLECTION_NAME = "hf_documents"
+VECTOR_SIZE = 384
+
 qdrant = QdrantClient(host="localhost", port=6333)
 
-app = FastAPI()
+def check_collection():
+    if qdrant.collection_exists(collection_name=COLLECTION_NAME):
+        return
+    
+    qdrant.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config = VectorParams(
+            size = VECTOR_SIZE,
+            distance = Distance.COSINE
+        )
+    )
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    check_collection()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 @app.get("/")
 def read_root():
     return {"message": "Paper RAG OPS API"}
 
-@router.post("/upload")
+@router.post("/upload", response_model=UploadResponse)
 async def upload_document(file: UploadFile = File(...)):
 
     allowed_extensions = [".txt", ".md", ".pdf"]
@@ -113,7 +146,7 @@ async def upload_document(file: UploadFile = File(...)):
         )
 
     qdrant.upsert(
-    collection_name="hf_documents",
+    collection_name=COLLECTION_NAME,
     points=points,
     )
 
@@ -121,17 +154,19 @@ async def upload_document(file: UploadFile = File(...)):
         "filename": file.filename,
         "content_type": file.content_type,
         "size_bytes": len(content),
-        "num_chunks": len(chunks)
+        "num_chunks": len(chunk_items)
     }
 
 
-@router.post("/query")
-async def query_document(question: str, top_k: int = 5):
+@router.post("/query", response_model=QueryResponse)
+async def query_document(request: QueryRequest):
+    question = request.question
+    top_k = request.top_k
     embedding = hf_client.feature_extraction(question)
     query_vector = embedding.squeeze().tolist()
 
     search_results = qdrant.query_points(
-        collection_name="hf_documents",
+        collection_name=COLLECTION_NAME,
         query = query_vector,
         limit=top_k,
         with_payload=True
@@ -156,19 +191,7 @@ async def query_document(question: str, top_k: int = 5):
         for chunk in retrieved_chunks
     )
 
-    prompt = f"""
-    You are a technical research assistant.
-
-    Answer the user question using only the provided context.
-    If the answer is not in the context, say you do not know.
-    Cite sources using [source: chunk_id].
-
-    Question:
-    {question}
-
-    Context:
-    {context}
-    """
+    prompt = build_rag_prompt(question = question, context=context)
 
     response = llm_client.chat_completion(
         messages=[
@@ -182,11 +205,18 @@ async def query_document(question: str, top_k: int = 5):
 
     answer = response.choices[0].message.content
 
-    return {
-    "question": question,
-    "answer": answer,
-    "sources": retrieved_chunks,
-    }
+    sources = [
+        SourceChunk(**chunk)
+        for chunk in retrieved_chunks
+    ]
+
+    return QueryResponse(
+        question=question,
+        result = Answer(
+            answer = answer
+        ),
+        sources=sources
+    )
 
 app.include_router(router)
 
