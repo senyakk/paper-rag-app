@@ -2,38 +2,34 @@
 
 A FastAPI-based RAG service for uploading technical documents and asking questions over them.
 
-The app currently supports document ingestion, chunking, embeddings, Qdrant vector storage, top-k retrieval, and LLM answers with returned source chunks.
+The app extracts text from uploaded files, chunks it, embeds each chunk, stores vectors in Qdrant, retrieves relevant chunks for a question, and asks an LLM to answer using the retrieved context.
 
-## Current Features
+## Features
 
 - Upload PDF, Markdown, and plain text files
-- Parse PDF files page by page with PyMuPDF
-- Chunk documents with overlapping character chunks
-- Generate embeddings with Hugging Face Inference API
-- Store vectors and chunk metadata in Qdrant
-- Retrieve top-k relevant chunks for a question
-- Generate an answer with an instruct LLM
-- Return retrieved source chunks with the answer
-- Auto-create the Qdrant collection on app startup
-- Document the RAG design in `docs/rag_design.md`
+- Generate answers with Hugging Face, OpenAI, or Anthropic
+- Retrieve top-k source chunks for each question
 
-## Tech Stack
+## Architecture
 
-- FastAPI
-- Qdrant
-- Hugging Face Inference API
-- PyMuPDF
-- Pydantic
-- Docker Compose
+The service has four main stages:
+
+1. Ingest an uploaded document
+2. Split extracted text into chunks
+3. Embed chunks and store them in Qdrant
+4. Retrieve relevant chunks and generate an answer
+
+Provider-specific code lives in `app/providers.py`. The API layer in `app/main.py` talks to providers through two small interfaces:
+
+- `EmbeddingProvider`: exposes `dimension` and `embed_texts(...)`
+- `ChatProvider`: exposes `answer(...)`
 
 ## Prerequisites
-
-Install these before running the app:
 
 - Python 3.11+
 - Docker
 - Docker Compose
-- A Hugging Face access token
+- API keys for the providers you choose
 
 ## Setup
 
@@ -47,13 +43,55 @@ source .venv/bin/activate
 Install dependencies:
 
 ```bash
-pip install fastapi uvicorn python-multipart pymupdf python-dotenv huggingface-hub qdrant-client
+pip install fastapi uvicorn python-multipart pymupdf python-dotenv huggingface-hub qdrant-client openai anthropic
 ```
 
-Create a `.env` file in the project root:
+Create a `.env` file in the project root.
 
-```bash
+Hugging Face default example:
+
+```env
+EMBEDDING_PROVIDER=huggingface
+EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+EMBEDDING_DIM=384
+
+LLM_PROVIDER=huggingface
+LLM_MODEL=Qwen/Qwen2.5-3B-Instruct:featherless-ai
+
 HF_TOKEN=your_hugging_face_token_here
+
+COLLECTION_NAME=hf_documents
+```
+
+OpenAI example:
+
+```env
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIM=1536
+
+LLM_PROVIDER=openai
+LLM_MODEL=gpt-4.1-mini
+
+OPENAI_API_KEY=your_openai_api_key_here
+
+COLLECTION_NAME=openai_documents
+```
+
+Mixed provider example:
+
+```env
+EMBEDDING_PROVIDER=openai
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_DIM=1536
+
+LLM_PROVIDER=anthropic
+LLM_MODEL=claude-3-5-haiku-latest
+
+OPENAI_API_KEY=your_openai_api_key_here
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+
+COLLECTION_NAME=openai_anthropic_documents
 ```
 
 Start Qdrant:
@@ -62,19 +100,31 @@ Start Qdrant:
 docker compose up -d
 ```
 
-Start the API:
+Qdrant API:
+
+```text
+http://localhost:6333
+```
+
+Qdrant dashboard:
+
+```text
+http://localhost:6333/dashboard
+```
+
+Start the FastAPI app:
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-The API will be available at:
+API:
 
 ```text
 http://localhost:8000
 ```
 
-Interactive API docs are available at:
+Interactive API docs:
 
 ```text
 http://localhost:8000/docs
@@ -144,6 +194,23 @@ Example response:
 }
 ```
 
+## Provider Configuration
+
+Supported embedding providers:
+
+- `huggingface`
+- `openai`
+
+Supported LLM providers:
+
+- `huggingface`
+- `openai`
+- `anthropic`
+
+The embedding provider and model determine the Qdrant vector size. If you change `EMBEDDING_PROVIDER`, `EMBEDDING_MODEL`, or `EMBEDDING_DIM`, use a new `COLLECTION_NAME` or re-index the existing collection.
+
+For example, `sentence-transformers/all-MiniLM-L6-v2` uses `384` dimensions, while `text-embedding-3-small` uses `1536` dimensions. Those vectors cannot live in the same Qdrant collection.
+
 ## Project Structure
 
 ```text
@@ -151,9 +218,8 @@ Example response:
 ├── app/
 │   ├── main.py
 │   ├── prompts.py
+│   ├── providers.py
 │   └── schemas.py
-├── docs/
-│   └── rag_design.md
 ├── add_collection.py
 ├── compose.yaml
 └── README.md
@@ -161,11 +227,10 @@ Example response:
 
 ## Notes
 
-- Qdrant must be running before the FastAPI app starts.
-- The app creates the `hf_documents` Qdrant collection automatically on startup.
-- `add_collection.py` is now optional because collection setup happens in the app startup flow.
+- The app creates the configured Qdrant collection automatically on startup.
 - Current chunking is character-based: `1000` characters with `200` characters of overlap.
-- Uploading a different file with the same filename can overwrite previous chunks. A future improvement is to add a unique `document_id` per upload.
+- Uploading a different file with the same filename can overwrite previous chunks because point IDs are based on filename, page, and chunk index.
+- Anthropic is supported for answer generation, not embeddings.
 
 ## Roadmap
 
@@ -174,5 +239,5 @@ Example response:
 - Add structured citations
 - Add an evaluation set with 50-100 question-answer pairs
 - Add an evaluation runner
-- Add OpenAI or Anthropic provider support
-- Add screenshots of the API docs for the portfolio artifact
+- Add token-aware chunking
+- Add screenshots of the API docs or Qdrant dashboard for the portfolio artifact

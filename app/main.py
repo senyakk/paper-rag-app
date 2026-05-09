@@ -2,7 +2,16 @@ from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
 from pymupdf import pymupdf
 from dotenv import load_dotenv
 import os
-from huggingface_hub import InferenceClient 
+
+from app.providers import (
+    AnthropicChatProvider,
+    ChatProvider,
+    EmbeddingProvider,
+    HFChatProvider,
+    HFEmbeddingProvider,
+    OpenAIChatProvider,
+    OpenAIEmbeddingProvider,
+)
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
 import uuid
@@ -21,32 +30,58 @@ from app.schemas import (
 
 load_dotenv()
 
-hf_token = os.getenv("HF_TOKEN")
+embedding_provider: EmbeddingProvider
+llm_provider: ChatProvider
 
-if not hf_token:
-    raise RuntimeError("HF_TOKEN is missing")
+embedding_provider_name = os.getenv("EMBEDDING_PROVIDER", "huggingface")
+llm_provider_name = os.getenv("LLM_PROVIDER", "huggingface")
 
-hf_client = InferenceClient(
-    model="sentence-transformers/all-MiniLM-L6-v2",
-    token = hf_token
-)
+match embedding_provider_name:
+    case "huggingface":
+        embedding_provider = HFEmbeddingProvider()
+    case "openai":
+        embedding_provider = OpenAIEmbeddingProvider()
+    case _:
+        raise RuntimeError(f"Unsupported EMBEDDING_PROVIDER: {embedding_provider_name}")
 
-llm_client = InferenceClient(
-    model="Qwen/Qwen2.5-3B-Instruct:featherless-ai",
-    token=hf_token,
-)
+match llm_provider_name:
+    case "huggingface":
+        llm_provider = HFChatProvider()
+    case "openai":
+        llm_provider = OpenAIChatProvider()
+    case "anthropic":
+        llm_provider = AnthropicChatProvider()
+    case _:
+        raise RuntimeError(f"Unsupported LLM_PROVIDER: {llm_provider_name}")
 
-# model="Qwen/Qwen2.5-3B-Instruct",
-# model="mistralai/Mistral-7B-Instruct-v0.3"
 
-
-COLLECTION_NAME = "hf_documents"
-VECTOR_SIZE = 384
+COLLECTION_NAME = os.getenv("COLLECTION_NAME", "hf_documents")
+VECTOR_SIZE = embedding_provider.dimension
 
 qdrant = QdrantClient(host="localhost", port=6333)
 
+
+def get_collection_vector_size(collection_name: str) -> int | None:
+    collection = qdrant.get_collection(collection_name=collection_name)
+    vectors = collection.config.params.vectors
+
+    if isinstance(vectors, dict):
+        first_vector = next(iter(vectors.values()), None)
+        return getattr(first_vector, "size", None)
+
+    return getattr(vectors, "size", None)
+
+
 def check_collection():
     if qdrant.collection_exists(collection_name=COLLECTION_NAME):
+        existing_size = get_collection_vector_size(COLLECTION_NAME)
+        if existing_size is not None and existing_size != VECTOR_SIZE:
+            raise RuntimeError(
+                f"Qdrant collection '{COLLECTION_NAME}' uses vector size "
+                f"{existing_size}, but the configured embedding provider uses "
+                f"{VECTOR_SIZE}. Use a different COLLECTION_NAME or re-index "
+                "the collection."
+            )
         return
     
     qdrant.create_collection(
@@ -121,11 +156,9 @@ async def upload_document(file: UploadFile = File(...)):
                 detail="Could not decode file as UTF-8 text"
             )
         
-    embeddings = []
-
-    for item in chunk_items:
-        embedding = hf_client.feature_extraction(item["text"])
-        embeddings.append(embedding.squeeze().tolist())
+    embeddings = embedding_provider.embed_texts(
+        [item["text"] for item in chunk_items]
+    )
     
     points = []
 
@@ -162,8 +195,7 @@ async def upload_document(file: UploadFile = File(...)):
 async def query_document(request: QueryRequest):
     question = request.question
     top_k = request.top_k
-    embedding = hf_client.feature_extraction(question)
-    query_vector = embedding.squeeze().tolist()
+    query_vector = embedding_provider.embed_texts([question])[0]
 
     search_results = qdrant.query_points(
         collection_name=COLLECTION_NAME,
@@ -192,18 +224,7 @@ async def query_document(request: QueryRequest):
     )
 
     prompt = build_rag_prompt(question = question, context=context)
-
-    response = llm_client.chat_completion(
-        messages=[
-            {"role": "user", 
-             "content": prompt
-            }
-        ],
-        max_tokens=500,
-        temperature=0.2,
-    )
-
-    answer = response.choices[0].message.content
+    answer = llm_provider.answer(prompt)
 
     sources = [
         SourceChunk(**chunk)
@@ -232,4 +253,3 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200):
         start += step
 
     return chunks
-
