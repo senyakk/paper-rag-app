@@ -1,0 +1,17 @@
+anthropic==0.97.0
+fastapi==0.136.1
+huggingface_hub==1.13.0
+langchain-core==1.4.0
+langchain-protocol==0.0.15
+langchain-text-splitters==1.1.2
+numpy==2.4.4
+openai==2.33.0
+pydantic==2.13.3
+PyMuPDF==1.27.2.3
+qdrant-client==1.17.1
+sentence-transformers==5.4.1
+tokenizers==0.22.2
+torch==2.11.0
+transformers==5.7.0
+uvicorn==0.46.0
+

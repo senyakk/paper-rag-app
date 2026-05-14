@@ -91,7 +91,7 @@ class HFChatProvider():
             raise RuntimeError("HF_TOKEN is missing")
 
         self.llm_client = InferenceClient(
-            model=os.getenv("LLM_MODEL", "Qwen/Qwen2.5-3B-Instruct:featherless-ai"),
+            model=(os.getenv("LLM_MODEL") or "Qwen/Qwen2.5-3B-Instruct:featherless-ai").strip(),
             token=hf_token,
         )
 
@@ -137,9 +137,12 @@ class OpenAIChatProvider():
             raise RuntimeError("OPENAI_API_KEY is missing")
         
         self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv("LLM_MODEL", "gpt-4.1-mini")
+        self.model = (os.getenv("LLM_MODEL") or "gpt-5-mini").strip()
 
-    def answer(self, prompt: str, *, max_tokens: int = 250, temperature: float = 0.2) -> str:
+    def answer(self, prompt: str, *, max_tokens: int = 250, temperature: float | None = 0.2) -> str:
+
+        if (self.model == "gpt-5-mini"): temperature = None
+
         response = self.client.responses.create(
             model=self.model,
             input=prompt,
@@ -160,7 +163,7 @@ class AnthropicChatProvider():
             raise RuntimeError("ANTHROPIC_API_KEY is missing")
 
         self.client = Anthropic(api_key=api_key)
-        self.model = os.getenv("LLM_MODEL", "claude-3-5-haiku-latest")
+        self.model = (os.getenv("LLM_MODEL") or "claude-3-5-haiku-latest").strip()
 
     def answer(
         self,
